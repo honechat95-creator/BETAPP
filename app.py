@@ -4,8 +4,8 @@ import requests
 st.set_page_config(page_title="Test Telegram", page_icon="📲")
 st.title("📲 Test Telegram")
 
-TELEGRAM_BOT_TOKEN = "PEGA_AQUI_TU_TOKEN_NUEVO"
-TELEGRAM_CHAT_ID = "PEGA_AQUI_TU_CHAT_ID"
+TELEGRAM_BOT_TOKEN = "8687893562:AAFgU1Mtl24-G5T_BXV54K7goF4dHg1RTsM" 
+TELEGRAM_CHAT_ID = "1506188246"
 
 def telegram_send(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
