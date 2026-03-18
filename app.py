@@ -22,6 +22,7 @@ RECENT_MATCHES = 8
 
 ODDS_BASE = "https://api.the-odds-api.com/v4"
 FD_BASE = "https://api.football-data.org/v4"
+REGIONS = "eu,uk,us"
 
 LEAGUES = {
     "La Liga": {"odds": "soccer_spain_la_liga", "fd": "PD"},
@@ -33,10 +34,20 @@ LEAGUES = {
     "Europa League": {"odds": "soccer_uefa_europa_league", "fd": "EL"},
 }
 
+FALLBACK_ORDER = [
+    "Premier League",
+    "La Liga",
+    "Serie A",
+    "Bundesliga",
+    "Ligue 1",
+    "Champions League",
+    "Europa League",
+]
+
 # ================= UI =================
 st.set_page_config(page_title="AI Betting PRO MAX", page_icon="🔥", layout="wide")
 st.title("🔥 AI Betting PRO MAX")
-st.caption("Multi-liga + datos reales + filtro conservador + Telegram")
+st.caption("Multi-liga + datos reales + fallback automático + Telegram")
 
 tab1, tab2, tab3 = st.tabs(["📊 Picks", "⚽ Partido", "📈 Datos"])
 
@@ -122,8 +133,10 @@ def extract_odds_rows(event):
 
     for bookmaker in event.get("bookmakers", []):
         book = bookmaker.get("title", "Desconocido")
+
         for market in bookmaker.get("markets", []):
             mkey = market.get("key")
+
             for outcome in market.get("outcomes", []):
                 price = outcome.get("price")
                 if not isinstance(price, (int, float)) or price <= 1:
@@ -162,6 +175,39 @@ def best_odds_by_market(df_market, market_name):
                 "bookmaker": row["bookmaker"]
             }
     return result
+
+# ================= ODDS FETCH =================
+def fetch_events_for_sport(sport_key):
+    return safe_get(
+        f"{ODDS_BASE}/sports/{sport_key}/odds",
+        params={
+            "apiKey": ODDS_API_KEY,
+            "regions": REGIONS,
+            "markets": "h2h,totals",
+            "oddsFormat": "decimal",
+            "dateFormat": "iso",
+        },
+    )
+
+def fetch_events_with_fallback(selected_league_name):
+    tried = []
+    first = LEAGUES[selected_league_name]
+    events = fetch_events_for_sport(first["odds"])
+    tried.append(selected_league_name)
+
+    if events and isinstance(events, list) and len(events) > 0:
+        return events, selected_league_name, tried
+
+    for league_name in FALLBACK_ORDER:
+        if league_name == selected_league_name:
+            continue
+        league = LEAGUES[league_name]
+        events = fetch_events_for_sport(league["odds"])
+        tried.append(league_name)
+        if events and isinstance(events, list) and len(events) > 0:
+            return events, league_name, tried
+
+    return [], selected_league_name, tried
 
 # ================= FOOTBALL DATA =================
 def fd_headers():
@@ -393,26 +439,27 @@ with st.sidebar:
     st.write(f"Cuotas permitidas: {MIN_ODDS} a {MAX_ODDS}")
     st.write(f"Probabilidad mínima: {int(MIN_PROB * 100)}%")
 
-league_name = st.selectbox("Liga / Competición", list(LEAGUES.keys()))
-league = LEAGUES[league_name]
-
-events = safe_get(
-    f"{ODDS_BASE}/sports/{league['odds']}/odds",
-    params={"apiKey": ODDS_API_KEY, "regions": "eu", "markets": "h2h,totals", "oddsFormat": "decimal", "dateFormat": "iso"}
-)
+selected_league_name = st.selectbox("Liga / Competición", list(LEAGUES.keys()))
+events, active_league_name, tried_leagues = fetch_events_with_fallback(selected_league_name)
 
 if not events:
-    st.warning("⚠️ Esta liga no tiene partidos disponibles ahora mismo o no está soportada.")
+    st.warning("⚠️ No hay partidos disponibles ahora mismo en ninguna liga soportada.")
     st.stop()
+
+active_league = LEAGUES[active_league_name]
+
+if active_league_name != selected_league_name:
+    st.info(f"No había partidos en {selected_league_name}. Mostrando {active_league_name} como fallback.")
 
 # ================= TAB 1: PICKS =================
 with tab1:
     st.header("📊 Mejores picks")
+    st.caption(f"Liga mostrada: {active_league_name}")
 
     all_picks = []
 
     for e in events:
-        model = build_real_model(league["fd"], e["home_team"], e["away_team"])
+        model = build_real_model(active_league["fd"], e["home_team"], e["away_team"])
         if model is None:
             continue
 
@@ -486,7 +533,7 @@ with tab1:
         df = pd.DataFrame(all_picks).sort_values(["Score", "Edge %"], ascending=False)
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.warning("No hay picks con filtro actual.")
+        st.warning("No hay picks con el filtro actual.")
 
 # ================= TAB 2: PARTIDO =================
 with tab2:
@@ -496,7 +543,7 @@ with tab2:
     selected = st.selectbox("Selecciona partido", names, key="partido_select")
 
     event = events[names.index(selected)]
-    model = build_real_model(league["fd"], event["home_team"], event["away_team"])
+    model = build_real_model(active_league["fd"], event["home_team"], event["away_team"])
 
     if model is None:
         st.warning("No pude cargar el modelo de este partido.")
@@ -518,8 +565,8 @@ with tab2:
             pretty["Cuota"] = pretty["Cuota"].round(2)
             st.dataframe(pretty, use_container_width=True, hide_index=True)
 
-            best_1x2 = best_odds_by_market(odds_df, "1X2")
             picks = []
+            best_1x2 = best_odds_by_market(odds_df, "1X2")
             for sel in ["1", "X", "2"]:
                 item = best_1x2.get(sel)
                 if not item:
@@ -618,8 +665,9 @@ with tab2:
 # ================= TAB 3: DATOS =================
 with tab3:
     st.header("📈 Datos de la competición")
+    st.caption(f"Competición activa: {active_league_name}")
 
-    table = fd_competition_standings(league["fd"])
+    table = fd_competition_standings(active_league["fd"])
     if table:
         df_table = pd.DataFrame([{
             "Equipo": t["team"]["name"],
