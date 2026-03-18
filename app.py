@@ -11,8 +11,8 @@ import streamlit as st
 # =========================================================
 ODDS_API_KEY = "eadde401e09ffab2dd0cce38db739680"
 FOOTBALL_DATA_TOKEN = "3b00a840d8364bdfb65c282efbb72a0c"
-TELEGRAM_BOT_TOKEN = ""   # opcional
-TELEGRAM_CHAT_ID = ""     # opcional
+TELEGRAM_BOT_TOKEN = "8687893562:AAFgU1Mtl24-G5T_BXV54K7goF4dHg1RTsM" 
+TELEGRAM_CHAT_ID = "1506188246"     
 
 ODDS_BASE = "https://api.the-odds-api.com/v4"
 FD_BASE = "https://api.football-data.org/v4"
