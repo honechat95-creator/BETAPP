@@ -1,6 +1,5 @@
 import math
 import unicodedata
-from statistics import mean
 
 import pandas as pd
 import requests
@@ -9,10 +8,11 @@ import streamlit as st
 # =========================================================
 # TOKENS / CONFIG
 # =========================================================
+
 ODDS_API_KEY = "eadde401e09ffab2dd0cce38db739680"
 FOOTBALL_DATA_TOKEN = "3b00a840d8364bdfb65c282efbb72a0c"
 TELEGRAM_BOT_TOKEN = "8687893562:AAFgU1Mtl24-G5T_BXV54K7goF4dHg1RTsM" 
-TELEGRAM_CHAT_ID = "1506188246"     
+TELEGRAM_CHAT_ID = "1506188246"
 
 ODDS_BASE = "https://api.the-odds-api.com/v4"
 FD_BASE = "https://api.football-data.org/v4"
@@ -24,7 +24,6 @@ DEFAULT_EDGE = 2.5
 KELLY_FRACTION = 0.25
 RECENT_MATCHES = 8
 
-# Ligas soportadas por esta versión
 LEAGUES = {
     "Premier League": {"odds_key": "soccer_epl", "fd_code": "PL"},
     "La Liga": {"odds_key": "soccer_spain_la_liga", "fd_code": "PD"},
@@ -81,12 +80,17 @@ def fd_headers():
 def telegram_send(message: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False, "Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID"
+
     url = f"{TG_BASE}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    payload = {
+        "chat_id": int(TELEGRAM_CHAT_ID),
+        "text": message
+    }
+
     try:
         r = requests.post(url, data=payload, timeout=TIMEOUT)
         r.raise_for_status()
-        return True, "Enviado"
+        return True, r.text
     except Exception as e:
         return False, str(e)
 
@@ -128,12 +132,12 @@ def fetch_event_odds(sport_key: str, event_id: str):
         "oddsFormat": "decimal",
         "dateFormat": "iso",
     }
-    data = safe_get(url, params=params)
-    return data
+    return safe_get(url, params=params)
 
 def merge_score_info(events, scores):
     score_map = {s.get("id"): s for s in scores if s.get("id")}
     merged = []
+
     for e in events:
         row = dict(e)
         s = score_map.get(e.get("id"))
@@ -150,6 +154,7 @@ def merge_score_info(events, scores):
             except Exception:
                 pass
         merged.append(row)
+
     return merged
 
 def map_h2h(name, home_team, away_team):
@@ -181,6 +186,7 @@ def extract_odds_rows(event):
 
     for bookmaker in event.get("bookmakers", []):
         book = bookmaker.get("title", "Desconocido")
+
         for market in bookmaker.get("markets", []):
             mkey = market.get("key")
 
@@ -214,6 +220,7 @@ def extract_odds_rows(event):
 def best_odds_by_market(df_market, market_name):
     sub = df_market[df_market["market"] == market_name].copy()
     result = {}
+
     for sel in sorted(sub["selection"].unique()):
         s = sub[sub["selection"] == sel].sort_values("odds", ascending=False)
         if len(s):
@@ -222,6 +229,7 @@ def best_odds_by_market(df_market, market_name):
                 "odds": float(row["odds"]),
                 "bookmaker": row["bookmaker"]
             }
+
     return result
 
 # =========================================================
@@ -237,12 +245,15 @@ def fd_competition_standings(fd_code: str):
     data = safe_get(url, headers=fd_headers())
     standings = data.get("standings", [])
     total_table = None
+
     for s in standings:
         if s.get("type") == "TOTAL":
             total_table = s.get("table", [])
             break
+
     if total_table is None and standings:
         total_table = standings[0].get("table", [])
+
     return total_table or []
 
 def fd_team_matches(team_id: int, limit: int = 8):
@@ -323,9 +334,14 @@ def compute_recent_team_stats(matches, team_id):
 
     if played == 0:
         return {
-            "played": 0, "gfpg": 1.20, "gapg": 1.20, "ppg": 1.00,
-            "home_gfpg": 1.20, "home_gapg": 1.20,
-            "away_gfpg": 1.20, "away_gapg": 1.20
+            "played": 0,
+            "gfpg": 1.20,
+            "gapg": 1.20,
+            "ppg": 1.00,
+            "home_gfpg": 1.20,
+            "home_gapg": 1.20,
+            "away_gfpg": 1.20,
+            "away_gapg": 1.20
         }
 
     points = wins * 3 + draws
@@ -378,6 +394,7 @@ def build_real_model(fd_code, home_name, away_name):
 
     home_team = match_odds_team_to_fd(home_name, teams)
     away_team = match_odds_team_to_fd(away_name, teams)
+
     if not home_team or not away_team:
         raise ValueError("No pude mapear uno de los equipos a football-data.org")
 
@@ -393,7 +410,6 @@ def build_real_model(fd_code, home_name, away_name):
     home_table = table_lookup.get(home_id, {"gfpg": league_avg, "gapg": league_avg, "ppg": 1.20, "position": 10})
     away_table = table_lookup.get(away_id, {"gfpg": league_avg, "gapg": league_avg, "ppg": 1.20, "position": 10})
 
-    # Mezcla temporada + forma + split local/visitante
     home_attack = 0.35 * home_recent["gfpg"] + 0.25 * home_recent["home_gfpg"] + 0.40 * home_table["gfpg"]
     away_attack = 0.35 * away_recent["gfpg"] + 0.25 * away_recent["away_gfpg"] + 0.40 * away_table["gfpg"]
 
@@ -457,7 +473,7 @@ with st.sidebar:
     edge_min = st.slider("Edge mínimo (%)", min_value=0.0, max_value=15.0, value=float(DEFAULT_EDGE), step=0.5)
     live_mode = st.checkbox("Solo partidos live / con score", value=False)
     st.markdown("---")
-    st.caption("Para Telegram, añade token y chat_id arriba en app.py.")
+    st.caption("Para Telegram, pega arriba el bot token y el chat id.")
 
 league_name = st.selectbox("Competición", list(LEAGUES.keys()))
 league = LEAGUES[league_name]
@@ -514,7 +530,6 @@ try:
 
         picks = []
 
-        # 1X2
         best_1x2 = best_odds_by_market(odds_df, "1X2")
         for sel in ["1", "X", "2"]:
             item = best_1x2.get(sel)
@@ -535,7 +550,6 @@ try:
                 "Value": "Sí" if edge is not None and edge >= edge_min else "No"
             })
 
-        # Totales 2.5 si existe
         total_markets = [m for m in odds_df["market"].dropna().unique() if str(m).startswith("Totales 2.5")]
         if total_markets:
             best_totals = best_odds_by_market(odds_df, total_markets[0])
@@ -601,13 +615,24 @@ try:
                 f"Edge: {top['Edge %']}%\n"
                 f"Stake: {top['Stake €']}€"
             )
+            st.session_state["telegram_msg"] = msg
 
-            if st.button("Enviar mejor pick a Telegram", use_container_width=True):
-                ok, info = telegram_send(msg)
-                if ok:
-                    st.success("Pick enviado a Telegram.")
-                else:
-                    st.error(f"No se pudo enviar: {info}")
+    if "telegram_msg" in st.session_state:
+        if st.button("Enviar mejor pick a Telegram", use_container_width=True):
+            ok, info = telegram_send(st.session_state["telegram_msg"])
+            if ok:
+                st.success("Pick enviado a Telegram.")
+                st.code(info)
+            else:
+                st.error(f"No se pudo enviar: {info}")
+
+    if st.button("TEST TELEGRAM", use_container_width=True):
+        ok, info = telegram_send("🚀 BOT FUNCIONANDO")
+        if ok:
+            st.success("Mensaje de prueba enviado")
+            st.code(info)
+        else:
+            st.error(f"Error Telegram: {info}")
 
 except requests.HTTPError as e:
     st.error(f"Error HTTP: {e}")
