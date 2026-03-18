@@ -23,11 +23,15 @@ DEFAULT_EDGE = 2.5
 KELLY_FRACTION = 0.25
 RECENT_MATCHES = 8
 
-# Filtro conservador
-MIN_ODDS = 1.60
-MAX_ODDS = 3.50
-MIN_MODEL_PROB = 0.35
-MAX_STAKE_PCT = 0.03  # máximo 3% del bankroll
+# =========================================================
+# FILTRO MUCHO MÁS ESTRICTO
+# =========================================================
+MIN_ODDS = 1.35
+MAX_ODDS = 3.20
+MIN_MODEL_PROB = 0.42
+MAX_STAKE_PCT = 0.025   # 2.5% máximo
+MAX_FAIR_ODDS = 3.00    # si el modelo cree que "fair" es más alta, descartamos
+ONLY_MARKET_FAVORITE = True   # solo picks que estén entre las opciones más probables del mercado
 
 LEAGUES = {
     "Premier League": {"odds_key": "soccer_epl", "fd_code": "PL"},
@@ -42,7 +46,7 @@ LEAGUES = {
 
 st.set_page_config(page_title="AI Betting Pro Max", page_icon="📊", layout="wide")
 st.title("📊 AI Betting Pro Max")
-st.caption("Cuotas reales + modelo con datos reales + filtro conservador + Telegram.")
+st.caption("Versión filtrada para picks más estables y menos sorpresas extremas.")
 
 # =========================================================
 # HELPERS
@@ -74,24 +78,25 @@ def edge_percent(prob, odds):
 def fractional_kelly(prob, odds, bankroll, fraction=0.25):
     if not prob or not odds or odds <= 1:
         return 0.0
-
     b = odds - 1
     q = 1 - prob
     f = (b * prob - q) / b
     f = max(0.0, f) * fraction
     f = min(f, MAX_STAKE_PCT)
-
     return bankroll * f
 
-def conservative_score(prob, odds, edge):
-    if prob is None or odds is None or edge is None:
-        return -999
+def conservative_score(prob, odds, edge, fair_odds, market_rank):
+    if prob is None or odds is None or edge is None or fair_odds is None:
+        return -9999
 
-    odds_penalty = max(0, odds - 3.5) * 8
+    # Castigo muy fuerte a cuotas altas y a selecciones secundarias del mercado
+    odds_penalty = max(0, odds - 2.60) * 18
+    fair_penalty = max(0, fair_odds - 2.60) * 20
+    rank_penalty = 12 if market_rank > 1 else 0
     prob_bonus = prob * 100
-    edge_bonus = edge * 1.5
+    edge_bonus = edge * 1.2
 
-    return prob_bonus + edge_bonus - odds_penalty
+    return prob_bonus + edge_bonus - odds_penalty - fair_penalty - rank_penalty
 
 def fd_headers():
     return {"X-Auth-Token": FOOTBALL_DATA_TOKEN}
@@ -112,6 +117,16 @@ def telegram_send(message: str):
         return True, r.text
     except Exception as e:
         return False, str(e)
+
+def get_market_rank(best_market_dict, selection):
+    prices = []
+    for sel, item in best_market_dict.items():
+        prices.append((sel, item["odds"]))
+    prices = sorted(prices, key=lambda x: x[1])  # menor cuota = más favorito
+    for idx, (sel, _) in enumerate(prices, start=1):
+        if sel == selection:
+            return idx
+    return 99
 
 # =========================================================
 # ODDS API
@@ -445,9 +460,10 @@ with st.sidebar:
     bankroll = st.number_input("Bankroll", min_value=1.0, value=DEFAULT_BANKROLL, step=50.0)
     edge_min = st.slider("Edge mínimo (%)", min_value=0.0, max_value=15.0, value=float(DEFAULT_EDGE), step=0.5)
     st.markdown("---")
-    st.write(f"Filtro cuotas: {MIN_ODDS} - {MAX_ODDS}")
-    st.write(f"Probabilidad mínima modelo: {int(MIN_MODEL_PROB * 100)}%")
-    st.caption("Pega arriba tus claves reales.")
+    st.write(f"Cuotas permitidas: {MIN_ODDS} a {MAX_ODDS}")
+    st.write(f"Probabilidad mínima: {int(MIN_MODEL_PROB * 100)}%")
+    st.write(f"Fair odds máxima: {MAX_FAIR_ODDS}")
+    st.caption("Filtro diseñado para evitar underdogs extremos.")
 
 league_name = st.selectbox("Competición", list(LEAGUES.keys()))
 league = LEAGUES[league_name]
@@ -491,12 +507,19 @@ try:
             prob = model["probs_1x2"].get(sel)
             edge = edge_percent(prob, item["odds"])
             stake = fractional_kelly(prob, item["odds"], bankroll, KELLY_FRACTION)
+            fair_odds = (1 / prob) if prob else None
+            market_rank = get_market_rank(best_1x2, sel)
 
             if (
                 item["odds"] < MIN_ODDS
                 or item["odds"] > MAX_ODDS
                 or prob < MIN_MODEL_PROB
+                or fair_odds is None
+                or fair_odds > MAX_FAIR_ODDS
             ):
+                continue
+
+            if ONLY_MARKET_FAVORITE and market_rank > 1:
                 continue
 
             picks.append({
@@ -505,10 +528,10 @@ try:
                 "Mejor cuota": round(item["odds"], 2),
                 "Casa": item["bookmaker"],
                 "Prob. modelo %": round(prob * 100, 2),
-                "Fair odds": round(1 / prob, 2) if prob else None,
+                "Fair odds": round(fair_odds, 2),
                 "Edge %": round(edge, 2) if edge is not None else None,
                 "Stake €": round(stake, 2),
-                "Score": round(conservative_score(prob, item["odds"], edge), 2),
+                "Score": round(conservative_score(prob, item["odds"], edge, fair_odds, market_rank), 2),
                 "Value": "Sí" if edge is not None and edge >= edge_min else "No"
             })
 
@@ -524,11 +547,15 @@ try:
                 prob = model["probs_totals_25"].get(sel)
                 edge = edge_percent(prob, item["odds"])
                 stake = fractional_kelly(prob, item["odds"], bankroll, KELLY_FRACTION)
+                fair_odds = (1 / prob) if prob else None
+                market_rank = get_market_rank(best_totals, sel)
 
                 if (
                     item["odds"] < MIN_ODDS
                     or item["odds"] > MAX_ODDS
                     or prob < MIN_MODEL_PROB
+                    or fair_odds is None
+                    or fair_odds > MAX_FAIR_ODDS
                 ):
                     continue
 
@@ -538,43 +565,46 @@ try:
                     "Mejor cuota": round(item["odds"], 2),
                     "Casa": item["bookmaker"],
                     "Prob. modelo %": round(prob * 100, 2),
-                    "Fair odds": round(1 / prob, 2) if prob else None,
+                    "Fair odds": round(fair_odds, 2),
                     "Edge %": round(edge, 2) if edge is not None else None,
                     "Stake €": round(stake, 2),
-                    "Score": round(conservative_score(prob, item["odds"], edge), 2),
+                    "Score": round(conservative_score(prob, item["odds"], edge, fair_odds, market_rank), 2),
                     "Value": "Sí" if edge is not None and edge >= edge_min else "No"
                 })
 
         if not picks:
-            st.warning("No hay picks que cumplan el filtro conservador.")
+            st.warning("No hay picks que cumplan el filtro estable.")
             st.session_state.pop("telegram_msg", None)
             st.stop()
 
-        result_df = pd.DataFrame(picks).sort_values(
-            by=["Score", "Edge %"],
+        result_df = pd.DataFrame(picks)
+        result_df = result_df[result_df["Value"] == "Sí"]
+
+        if len(result_df) == 0:
+            st.warning("No hay value claro dentro del filtro estable.")
+            st.session_state.pop("telegram_msg", None)
+            st.stop()
+
+        result_df = result_df.sort_values(
+            by=["Score", "Prob. modelo %", "Edge %"],
             ascending=False,
             na_position="last"
         )
 
         st.dataframe(result_df, use_container_width=True, hide_index=True)
+        st.success(f"Se detectaron {len(result_df)} picks estables con value.")
 
-        value_df = result_df[result_df["Value"] == "Sí"]
-        if len(value_df):
-            st.success(f"Se detectaron {len(value_df)} picks con value.")
-            top = value_df.iloc[0]
-            msg = (
-                f"📊 AI Betting Pro Max\n"
-                f"{event['home_team']} vs {event['away_team']}\n"
-                f"Pick: {top['Mercado']} - {top['Selección']}\n"
-                f"Cuota: {top['Mejor cuota']} @ {top['Casa']}\n"
-                f"Prob modelo: {top['Prob. modelo %']}%\n"
-                f"Edge: {top['Edge %']}%\n"
-                f"Stake: {top['Stake €']}€"
-            )
-            st.session_state["telegram_msg"] = msg
-        else:
-            st.warning("No hay value claro con el umbral actual.")
-            st.session_state.pop("telegram_msg", None)
+        top = result_df.iloc[0]
+        msg = (
+            f"📊 AI Betting Pro Max\n"
+            f"{event['home_team']} vs {event['away_team']}\n"
+            f"Pick: {top['Mercado']} - {top['Selección']}\n"
+            f"Cuota: {top['Mejor cuota']} @ {top['Casa']}\n"
+            f"Prob modelo: {top['Prob. modelo %']}%\n"
+            f"Edge: {top['Edge %']}%\n"
+            f"Stake: {top['Stake €']}€"
+        )
+        st.session_state["telegram_msg"] = msg
 
         c1, c2 = st.columns(2)
         with c1:
